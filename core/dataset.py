@@ -23,3 +23,5 @@ class Dataset:
         n_test = int(len(X) * test_size)
         test_idx, train_idx = idx[:n_test], idx[n_test:]
         return X[train_idx], X[test_idx], y[train_idx], y[test_idx]
+data = Dataset("data/house_data.csv", target="price")
+print(data.get_X_y())
