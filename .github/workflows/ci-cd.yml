@@ -1,0 +1,131 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - preprod
+      - staging
+  pull_request:
+    branches:
+      - main
+      - preprod
+      - staging
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: CI - Lint, Tests & Entraînement
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Configurer Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest flake8
+
+      - name: Vérifier la syntaxe et les erreurs critiques (flake8)
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Exécuter les tests unitaires (pytest)
+        run: python -m pytest -v
+
+      - name: Exécuter le pipeline d'entraînement (main.py)
+        run: |
+          python main.py
+          test -f models/best_model.pkl
+
+      - name: Publier le modèle entraîné comme artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: models/best_model.pkl
+          retention-days: 7
+
+  preprod_verification:
+    name: CD - Vérification Avant-Production (preprod)
+    needs: ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/preprod' || github.ref == 'refs/heads/staging')
+    runs-on: ubuntu-latest
+    environment: preprod
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Configurer Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Télécharger le modèle entraîné
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          path: models
+
+      - name: Test de vérification (smoke test) sur le modèle preprod
+        run: |
+          python -c "
+          import numpy as np
+          from pipeline.trainer import Trainer
+          trainer = Trainer.load('models/best_model.pkl')
+          sample = np.array([[150.0, 3.0, 2.0, 10.0, 5.0]])
+          pred = trainer.predict(sample)
+          assert np.isfinite(pred[0]) and pred[0] > 0, f'Prédiction invalide: {pred}'
+          print(f'Vérification preprod OK - Prédiction test: {pred[0]:.2f}')
+          "
+
+  production_deploy:
+    name: CD - Déploiement Production (main)
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Configurer Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Télécharger le modèle validé
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          path: models
+
+      - name: Valider et déployer en production
+        run: |
+          python -c "
+          import numpy as np
+          from pipeline.trainer import Trainer
+          trainer = Trainer.load('models/best_model.pkl')
+          sample = np.array([[150.0, 3.0, 2.0, 10.0, 5.0]])
+          pred = trainer.predict(sample)
+          assert np.isfinite(pred[0]) and pred[0] > 0
+          print(f'Modèle prêt pour la production - Prédiction test: {pred[0]:.2f}')
+          "
